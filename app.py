@@ -10,8 +10,6 @@ from functools import partial
 from datetime import datetime
 
 
-
-
 # Read template file that has rules
 template = pd.read_excel('qasaym_template.xlsx')
 
@@ -30,11 +28,6 @@ def dialog():
     msgBox.setStandardButtons(QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel)
     msgBox.setDefaultButton(QMessageBox.Save)
     ret = msgBox.exec_()
-    # mbox = QMessageBox()
-    # mbox.setText("Your allegiance has been noted")
-    # mbox.setDetailedText("You are now a disciple and subject of the all-knowing Guru")
-    # mbox.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
-    # mbox.exec_()
 
 def add_new_qasema(number,name,status,taqseem):
     record = template[ template['الحاله'] == status ].copy()
@@ -51,6 +44,8 @@ def add_new_qasema(number,name,status,taqseem):
 
 
 def add_click():
+    global nameTextEdit
+    global recTextEdit
     name = nameTextEdit.text().strip()
     rec = recTextEdit.text().strip()
     status = statusComboBox.currentText()
@@ -60,14 +55,18 @@ def add_click():
         new_df = add_new_qasema(rec,name,status,{})
         model = DataFrameModel(new_df)
         table.setModel(model)
+        nameTextEdit.setText('')
+        recTextEdit.setText(str(int(rec)+1))
+
+
 
 def clicked_table():
     global table
     index = table.selectedIndexes()[0]
     data = table.model().data(index)
-    print ("data : " + str(data))
-    print ("row : " , index.row())
-    print ("col : " , index.column())
+    # print ("data : " + str(data))
+    # print ("row : " , index.row())
+    # print ("col : " , index.column())
     global last_selected_row
     last_selected_row = index.row()
 
@@ -97,14 +96,29 @@ def remove_dialog():
         table.setModel(model)
         last_selected_row = None
 
-def save_excel():
-    file_name = datetime.now().strftime("%d-%m-%Y__%H-%M-%S")+'.xlsx'
+def save_excel(file_name,default_name = True):
+    if default_name:
+        file_name = datetime.now().strftime("%d-%m-%Y__%H-%M-%S")+'.xlsx'
     new_df.drop(['التاريخ'],axis = 1).to_excel(file_name, sheet_name='Qasaym 1', index=False, engine='openpyxl')    
     mbox = QMessageBox()
-    mbox.setText("تم حفظ القسائم في ملف "+file_name)
+    mbox.setText("تم حفظ القسائم في ملف \n"+file_name)
     mbox.setStandardButtons(QMessageBox.Ok)
     mbox.setDefaultButton(QMessageBox.Ok)
+    # mbox.setDetailedText("You are now a disciple and subject of the all-knowing Guru")
+    # mbox.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
     mbox.exec_()
+
+def saveFileDialog(widget):
+    if len(new_df) == 0:
+        return None
+    
+    options = QFileDialog.Options()
+    options |= QFileDialog.DontUseNativeDialog
+
+    fileName, _ = QFileDialog.getSaveFileName(widget,"QFileDialog.getSaveFileName()","","Excel 97-2003 higher compatibility (*.xls)", options=options)
+    if fileName:
+        print(fileName)
+        save_excel(fileName+".xls",False)
 
 # def select_row():
 #     global table
@@ -158,7 +172,7 @@ removebtn.clicked.connect(remove_dialog)
 
 exportbtn = QPushButton()
 exportbtn.setText('&حفظ إلي إكسيل')
-exportbtn.clicked.connect(save_excel)
+exportbtn.clicked.connect(partial(saveFileDialog,exportbtn))
 
 buttonsLayout = QHBoxLayout()
 buttonsLayout.addWidget(removebtn)
