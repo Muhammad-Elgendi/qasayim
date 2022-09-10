@@ -7,7 +7,7 @@ from PyQt5 import QtCore, QtGui, QtPrintSupport
 import pandas as pd
 import json
 from PandasView import DataFrameModel
-# from AnotherWindow import JsonEditor
+from ManualCaseWindow import ManualCaseWindow
 from functools import partial
 from datetime import datetime
 import numpy as np
@@ -15,10 +15,21 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from arabic_reshaper import ArabicReshaper
 from bidi.algorithm import get_display
+import base64
+import sqlite3
+from sqlite3 import Error
 
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
+
+        # center window
+        centerPoint = QDesktopWidget().availableGeometry().center()
+        qtRectangle = self.frameGeometry()
+        qtRectangle.moveCenter(centerPoint)
+        self.move(qtRectangle.topLeft())
+
+        self.setWindowModality(QtCore.Qt.ApplicationModal)
 
         # self._createMenuBar()
 
@@ -86,6 +97,12 @@ class MainWindow(QWidget):
         removebtn.resize(removebtn.sizeHint())
         removebtn.clicked.connect(self.remove_qasema)
 
+        dbbtn = QPushButton()
+        dbbtn.setText('&إستخراج التقارير')
+        dbbtn.setToolTip('تأكد من حفظ البيانات أولاً')
+        dbbtn.resize(dbbtn.sizeHint())
+        dbbtn.clicked.connect(self.exportdb)
+
         exportbtn = QPushButton()
         exportbtn.setText('&حفظ إلي إكسيل')
         exportbtn.clicked.connect(partial(self.saveFileDialog,'excel'))
@@ -103,8 +120,9 @@ class MainWindow(QWidget):
 
         buttonsLayout = QHBoxLayout()
         buttonsLayout.addWidget(removebtn)
-        buttonsLayout.addStretch(1)
+        buttonsLayout.addStretch(1)        
         buttonsLayout.addWidget(openbtn)
+        buttonsLayout.addWidget(dbbtn)
         buttonsLayout.addStretch(1)
         buttonsLayout.addWidget(exportbtn)
         buttonsLayout.addWidget(pdfbtn)
@@ -117,10 +135,14 @@ class MainWindow(QWidget):
         self.table.doubleClicked.connect(self.clicked_table)
         printbtn.clicked.connect(self.print_widget)
 
+        self.manualWindow = QCheckBox("&تمكين إدخال الحالة اليدوية في نافذة منفصلة")
+        self.manualWindow.setChecked(False)
+
         grid = QGridLayout()
         grid.addLayout(topLayout,0,0,1,2)
         grid.addLayout(buttonsLayout,1,0,1,2)
-        grid.addWidget(self.table, 2, 0,3,2)
+        grid.addWidget(self.manualWindow, 2, 0,1,2)
+        grid.addWidget(self.table, 3, 0,3,2)
         self.setLayout(grid)
 
     def closeEvent(self, event):
@@ -128,10 +150,17 @@ class MainWindow(QWidget):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
         if reply == QMessageBox.Yes:
-            # TODO Storing in Database
-
-            # save to excel
             if len(self.new_df) > 0:
+                # Storing in Database
+                try:
+                    conn = create_connection(appctxt.get_resource("qasayim.db"))
+                    if conn is not None:
+                        ##push the dataframe to sql 
+                        self.new_df.to_sql("qasayim", conn, if_exists="append", index = False)
+                except Error as e:
+                    print(e)
+
+                # save to excel            
                 self.saveFileDialog("excel")
 
             # close Qasayim
@@ -140,32 +169,43 @@ class MainWindow(QWidget):
         else:
             event.ignore()
         
-    def add_new_qasema(self,number,name,status):
-        record = self.template[ self.template['الحاله'] == status ].copy().reset_index(drop=True)
-        # if status == 'حاله يدويه':
-        #     self.w = JsonEditor(record.iloc[0].to_dict())
-        #     self.w.show()
-        #     self.hide()
+    def add_new_qasema(self,number,name,status,record_dict = None):
+        if record_dict == None:
+            record = self.template[ self.template['الحاله'] == status ].copy().reset_index(drop=True)
+        else:
+            record = self.template[ self.template['الحاله'] == 'شهاده أصليه ماجستير' ].copy().reset_index(drop=True)
+            for col in record_dict.keys():
+                record[col] = record_dict[col]
+            record['الحاله'] = status
 
         auto_sum = True
-        for key in record.iloc[0][record.iloc[0].str.contains('دخل', na=False)].to_dict().keys():
-            if key == 'الجمله':
-                auto_sum = False
-            value, done = QInputDialog.getDouble(
-                self, 'Input Dialog', str(record[key].iloc[0])+' في '+key+' :')
-            if done:
-                record[key] = value
-                items = [str(x) for x in self.sum_rules[key].dropna().to_list()]
-                if len(items) == 1 and status != 'حاله يدويه':
-                    record[key] = value * float(items[0])
+        if status == 'حاله يدويه' and self.manualWindow.isChecked() and record_dict == None:
+            dictionary = record.drop(['الحاله','الجمله','الاسـم','رقم القسيمة'],axis=1)
+            dictionary.loc[0,:] = 0.0
+            dictionary = dictionary.iloc[0].to_dict()
+            self.w = ManualCaseWindow(self,dictionary)
+            self.w.show()
+            self.hide()
+            return None
+        else:
+            for key in record.iloc[0][record.iloc[0].str.contains('دخل', na=False)].to_dict().keys():
+                if key == 'الجمله':
+                    auto_sum = False
+                value, done = QInputDialog.getDouble(
+                    self, 'إدخال قيمة عشرية', str(record[key].iloc[0])+' في '+key+' :')
+                if done:
+                    record[key] = value
+                    items = [str(x) for x in self.sum_rules[key].dropna().to_list()]
+                    if len(items) == 1 and status != 'حاله يدويه':
+                        record[key] = value * float(items[0])
 
-                if len(items) > 1 and status != 'حاله يدويه':
-                    item, ok = QInputDialog().getItem(self, "إختيار القيمة المطلوبة",
-                                                        str(key)+" X :", items, 0, False)
-                    if ok and item:
-                        record[key] = value * float(item)
-            else:
-                return None
+                    if len(items) > 1 and status != 'حاله يدويه':
+                        item, ok = QInputDialog().getItem(self, "إختيار القيمة المطلوبة",
+                                                            str(key)+" X :", items, 0, False)
+                        if ok and item:
+                            record[key] = value * float(item)
+                else:
+                    return None
 
         record['الاسـم'] = name
         record['رقم القسيمة'] = number   
@@ -200,6 +240,11 @@ class MainWindow(QWidget):
                 self.nameTextEdit.setText('')
                 self.recTextEdit.setText(str(int(rec)+1))
                 self.saved = False
+
+    def exportdb(self):
+        self.dbwindow = MyDBWindow(self)
+        self.dbwindow.show()
+        self.hide()
 
     def clicked_table(self):
         index = self.table.selectedIndexes()[0]
@@ -273,7 +318,7 @@ class MainWindow(QWidget):
         show_saved_message(file_name)
 
     def openFileDialog(self):
-        if len(self.new_df) > 0 and not self.saved:
+        if (len(self.new_df) > 0 and not self.saved) or len(self.new_df) == 0:
             reply = QMessageBox.question(self, 'تأكد من حفظ الملف', 'هل تريد فتح ملف جديد دون حفظ التغيرات؟',
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         
@@ -408,12 +453,162 @@ def arabify(arabic_text):
 def cleanup():
     print('CleanUp executed')
 
+def decode_pass(encoded):
+    """
+    Decoding a Base64 string is essentially a reverse of the encoding process.
+    We decode the Base64 string into bytes of unencoded data.
+    We then convert the bytes-like object into a string.
+    """
+    base64_bytes = str(encoded).strip().encode('utf-8')
+    message_bytes = base64.b64decode(base64_bytes)
+    return str(message_bytes.decode('utf-8')).strip()
+
+def create_connection(db_file):
+    """ create a database connection to a SQLite database """
+    conn = None
+    try:
+        conn = sqlite3.connect(db_file)
+    except Error as e:
+        print(e)
+    finally:
+        if conn:
+            return conn
+            
+class LoginForm(QWidget):
+    def __init__(self):
+        super().__init__()
+
+        # center window
+        centerPoint = QDesktopWidget().availableGeometry().center()
+        qtRectangle = self.frameGeometry()
+        qtRectangle.moveCenter(centerPoint)
+        self.move(qtRectangle.topLeft())
+
+        self.setWindowTitle('تسجيل الدخول لقسائم')
+        self.resize(500, 120)
+
+        # Read template file that has logins
+        self.logins = pd.read_excel(
+                        appctxt.get_resource("qasayim_template.xlsx"),
+                        engine='openpyxl',
+                        sheet_name='logins')
+
+        layout = QGridLayout()
+
+        label_name = QLabel('<font size="4"> إسم المستخدم </font>')
+        self.lineEdit_username = QLineEdit()
+        self.lineEdit_username.setPlaceholderText('أدخل إسم المستخدم')
+        layout.addWidget(label_name, 0, 0)
+        layout.addWidget(self.lineEdit_username, 0, 1)
+
+        label_password = QLabel('<font size="4"> كلمة المرور </font>')
+        self.lineEdit_password = QLineEdit()
+        self.lineEdit_password.setPlaceholderText('أدخل كلمة المرور')
+        layout.addWidget(label_password, 1, 0)
+        layout.addWidget(self.lineEdit_password, 1, 1)
+
+        button_login = QPushButton('دخول')
+        button_login.clicked.connect(self.check_password)
+        layout.addWidget(button_login, 2, 0, 1, 2)
+        layout.setRowMinimumHeight(2, 75)
+
+        self.setLayout(layout)
+
+    def check_password(self):
+        msg = QMessageBox()
+        access = False
+        for index, row in self.logins.iterrows():
+            if self.lineEdit_username.text() == decode_pass(row['usr']) and self.lineEdit_password.text() == decode_pass(row['pass']):
+                access = True
+                break
+
+        if access:
+            msg.setText('تم تسجيل الدخول بنجاح')
+            # hide message
+            # msg.exec_()
+            self.hide() 
+            qasayim = MainWindow()
+            qasayim.show()
+        else:
+            msg.setText('كلمة المرور خاطئة ، سيتم إغلاق البرنامج')
+            msg.exec_()
+            appctxt.app.quit()
+
+
+class MyDBWindow(QWidget):
+    def __init__(self,parent_widget):
+        super().__init__()
+
+        self.parent_widget = parent_widget
+        # center window
+        centerPoint = QDesktopWidget().availableGeometry().center()
+        qtRectangle = self.frameGeometry()
+        qtRectangle.moveCenter(centerPoint)
+        self.move(qtRectangle.topLeft())
+
+        # Read template file that has rules
+        self.template = pd.read_excel(
+                        appctxt.get_resource("qasayim_template.xlsx"),
+                        engine='openpyxl',
+                        sheet_name='rules')
+
+        self.setWindowTitle('إستخراج التقارير من قاعدة البيانات')
+        self.resize(800, 800)   
+
+        layout = QGridLayout()
+
+        label_name = QLabel('<font size="4"> من تاريخ </font>')
+        self.start_date_edit = QLineEdit()
+        self.start_date_edit.setPlaceholderText('أدخل تاريخ البداية')
+        layout.addWidget(label_name, 0, 0)
+        layout.addWidget(self.start_date_edit, 0, 1)
+
+        label_password = QLabel('<font size="4"> إلي تاريخ </font>')
+        self.end_date_edit = QLineEdit()
+        self.end_date_edit.setPlaceholderText('أدخل تاريج النهاية')
+        layout.addWidget(label_password, 1, 0)
+        layout.addWidget(self.end_date_edit, 1, 1)
+
+        label_columns = QLabel('<font size="4"> إختيار التقرير </font>')
+        self.colComboBox = QComboBox()
+        options = ['الكل']
+        options.extend([str(option) for option in self.template['الحاله'].dropna().to_list()])
+        self.colComboBox.addItems(options)
+        layout.addWidget(label_columns, 2, 0)
+        layout.addWidget(self.colComboBox, 2, 1)
+
+        btn_export = QPushButton('إستخراج التقرير إلي إكسيل')
+        btn_export.clicked.connect(self.export_db)
+        layout.addWidget(btn_export, 3, 0, 1, 2)
+        layout.setRowMinimumHeight(3, 75)
+
+        self.setLayout(layout)
+
+    def export_db(self):
+        try:
+            conn = create_connection(appctxt.get_resource("qasayim.db"))
+            if conn is not None:
+                df = pd.read_sql('SELECT * FROM qasayim', conn, parse_dates={"التاريخ": {"format":'%d-%m-%Y %H:%M:%S'}}) 
+                file_name = "export_qasayim_"+datetime.now().strftime("%d-%m-%Y__%H-%M-%S")+'.xlsx'
+                df = df[(df['التاريخ'] >= self.start_date_edit.text() ) & (df['التاريخ'] <= self.end_date_edit.text() )]
+                col = self.colComboBox.currentText()
+                if col == 'الكل':
+                    self.parent_widget.new_df = df
+                else:
+                    self.parent_widget.new_df = df[col]
+                self.hide()                
+                self.parent_widget.show()
+                self.parent_widget.saveFileDialog('excel')
+        except Error as e:
+            print(e)
+
 if __name__ == "__main__":
     appctxt = ApplicationContext()       # 1. Instantiate ApplicationContext
     # app = QApplication(sys.argv)
-    qasayim = MainWindow()
-    qasayim.show()
     # app.aboutToQuit.connect(cleanup)
     # sys.exit(app.exec_())
+    form = LoginForm()
+    form.show()   
+    appctxt.app.aboutToQuit.connect(cleanup)
     exit_code = appctxt.app.exec()      # 2. Invoke appctxt.app.exec()
     sys.exit(exit_code)
